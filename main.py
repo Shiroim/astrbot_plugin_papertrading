@@ -174,6 +174,24 @@ class PaperTradingPlugin(Star):
         async for result in self.user_handlers.handle_user_registration(event):
             yield result
 
+    @filter.command("股票入金")
+    async def deposit_money(self, event: AstrMessageEvent):
+        """股票入金"""
+        async for result in self.user_handlers.handle_deposit(event):
+            yield result
+
+    @filter.command("股票出金")
+    async def withdraw_money(self, event: AstrMessageEvent):
+        """股票出金"""
+        async for result in self.user_handlers.handle_withdraw(event):
+            yield result
+
+    @filter.command("股票重置")
+    async def reset_account(self, event: AstrMessageEvent):
+        """股票重置"""
+        async for result in self.user_handlers.handle_reset(event):
+            yield result
+
     # ==================== 交易命令 ====================
     
     @filter.command("买入")

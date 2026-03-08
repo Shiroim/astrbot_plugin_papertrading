@@ -266,6 +266,26 @@ class DataStorage:
         """保存配置"""
         self._save_json('config.json', config)
     
+    def reset_user_data(self, user_id: str):
+        """重置用户所有数据 (删除用户、持仓、订单)"""
+        # 1. 删除用户基础信息
+        self.delete_user(user_id)
+        
+        # 2. 删除持仓
+        positions = self._load_json('positions.json')
+        if user_id in positions:
+            del positions[user_id]
+            self._save_json('positions.json', positions)
+            
+        # 3. 删除订单
+        orders = self._load_json('orders.json')
+        # 找出该用户的所有订单ID
+        keys_to_del = [oid for oid, order in orders.items() if order.get('user_id') == user_id]
+        if keys_to_del:
+            for k in keys_to_del:
+                del orders[k]
+            self._save_json('orders.json', orders)
+
     def get_plugin_config_value(self, key: str, default=None):
         """获取插件配置值（优先从插件配置读取，回退到本地配置）"""
         if self.plugin_config and hasattr(self.plugin_config, 'get'):

@@ -31,6 +31,13 @@ class TradeCoordinator:
         sender_id = event.get_sender_id()
         session_id = event.get_session_id()
         
+        # 修复开启群聊隔离后，session_id 包含 group_id 前缀的问题
+        # 兼容性修复：处理 session_id 包含 group_id 前缀的情况 (OneBot v11 Adapter issue)
+        # 某些情况下 session_id 会变成 group_id_user_id 格式
+        if sender_id and session_id.startswith(f"{sender_id}_"):
+            # 去除前缀，还原为纯 user_id
+            session_id = session_id[len(sender_id)+1:]
+        
         return f"{platform_name}:{sender_id}:{session_id}"
     
     async def validate_user_registration(self, event: AstrMessageEvent) -> Tuple[bool, Optional[str], Optional[User]]:

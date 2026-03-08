@@ -314,3 +314,43 @@ class UserInteractionService:
         """批量发送通知消息"""
         for session_id, message in session_messages.items():
             await self.send_notification(session_id, message)
+
+    async def wait_for_reset_confirmation(self, event: AstrMessageEvent) -> tuple[Optional[bool], Optional[str]]:
+        """
+        等待用户确认重置
+        """
+        prompt = (
+            "⚠️ 警告：股票重置将清空您的所有资产、持仓和订单记录！\n"
+            "此操作不可恢复！\n\n"
+            "💡 请回复:\n"
+            '  "确认" 或 "y" - 立即重置\n'
+            '  "取消" 或 "n" - 取消操作'
+        )
+        try:
+            await event.send(MessageChain([Plain(prompt)]))
+        except Exception:
+            return None, "发送提示失败"
+
+        try:
+            confirmation_result = None
+            @session_waiter(timeout=30, record_history_chains=False)
+            async def reset_waiter(controller: SessionController, wait_event: AstrMessageEvent):
+                nonlocal confirmation_result
+                val = wait_event.message_str.strip().lower()
+                if val in ['确认', 'y', 'yes', '是']:
+                    confirmation_result = True
+                    controller.stop()
+                elif val in ['取消', 'n', 'no', '否']:
+                    confirmation_result = False
+                    controller.stop()
+                else:
+                    await wait_event.send(MessageChain([Plain('❌ 请回复"确认"或"取消"')]))
+
+            await reset_waiter(event)
+            if confirmation_result is None:
+                return None, "已取消"
+            return confirmation_result, None
+        except asyncio.TimeoutError:
+            return None, "⏰ 操作超时"
+        except Exception as e:
+            return None, f"出错: {e}"

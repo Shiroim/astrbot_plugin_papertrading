@@ -1,5 +1,5 @@
 name: astrbot_plugin_papertrading # 这是你的插件的唯一识别名。
 desc: 基于a股真实数据的模拟炒股插件。支持实时股价、委托交易、持仓管理、群内排行等功能。 # 插件简短描述
-version: v1.0.3 # 插件版本号。格式：v1.1.1 或者 v1.1
+version: v1.0.4 # 插件版本号。格式：v1.1.1 或者 v1.1
 author: Shiroim # 作者
 repo: https://github.com/Shiroim/astrbot_plugin_papertrading # 插件的仓库地址
