@@ -18,9 +18,10 @@ class TradeCoordinator:
     统一处理股票搜索、价格解析、用户验证等公共逻辑
     """
     
-    def __init__(self, storage: DataStorage, stock_service: StockDataService):
+    def __init__(self, storage: DataStorage, stock_service: StockDataService, trading_engine=None):
         self.storage = storage
         self.stock_service = stock_service
+        self._trading_engine = trading_engine
     
     def get_isolated_user_id(self, event: AstrMessageEvent) -> str:
         """
@@ -229,14 +230,17 @@ class TradeCoordinator:
         text += f'\n💡 请回复数字 1-{len(candidates[:5])} 选择股票，或输入"取消"退出'
         return text
     
+    def set_trading_engine(self, trading_engine) -> None:
+        """延迟注入 TradingEngine（解决循环依赖时的初始化顺序问题）"""
+        self._trading_engine = trading_engine
+
     async def update_user_assets_if_needed(self, user_id: str):
-        """
-        更新用户总资产（如果需要）
-        """
+        """更新用户总资产（如果需要）"""
         try:
-            from .trading_engine import TradingEngine
-            trading_engine = TradingEngine(self.storage, self.stock_service)
-            await trading_engine.update_user_assets(user_id)
+            if self._trading_engine is None:
+                from .trading_engine import TradingEngine
+                self._trading_engine = TradingEngine(self.storage, self.stock_service)
+            await self._trading_engine.update_user_assets(user_id)
         except Exception as e:
             logger.error(f"更新用户资产失败: {e}")
     

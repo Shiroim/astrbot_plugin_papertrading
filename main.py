@@ -60,8 +60,8 @@ class PaperTradingPlugin(Star):
         # 交易引擎（依赖注入）
         self.trading_engine = TradingEngine(self.storage, self.stock_service)
         
-        # 交易协调器服务
-        self.trade_coordinator = TradeCoordinator(self.storage, self.stock_service)
+        # 交易协调器服务（注入 trading_engine 复用同一实例）
+        self.trade_coordinator = TradeCoordinator(self.storage, self.stock_service, self.trading_engine)
         
         # 用户交互服务
         self.user_interaction = UserInteractionService()

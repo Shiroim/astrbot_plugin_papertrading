@@ -127,22 +127,21 @@ class Formatters:
         return "\n".join(lines)
     
     @staticmethod
-    def format_ranking(users_data: List[Dict[str, Any]], current_user_id: str = None) -> str:
+    def format_ranking(users_data: List[Dict[str, Any]], current_user_id: str = None,
+                       initial_balance: float = 1000000) -> str:
         """格式化排行榜"""
         if not users_data:
             return "📊 暂无排行数据"
         
-        # 按总资产排序
         sorted_users = sorted(users_data, key=lambda x: x.get('total_assets', 0), reverse=True)
         
         lines = ["🏆 群内排行榜 (按总资产):"]
         
-        for i, user in enumerate(sorted_users[:10], 1):  # 显示前10名
+        for i, user in enumerate(sorted_users[:10], 1):
             medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-            profit_loss = user.get('total_assets', 0) - 1000000  # 减去初始资金
+            profit_loss = user.get('total_assets', 0) - initial_balance
             profit_color = "🟢" if profit_loss >= 0 else "🔴"
             
-            # 标记当前用户
             name_marker = "👑" if user.get('user_id') == current_user_id else ""
             
             lines.append(

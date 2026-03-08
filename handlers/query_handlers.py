@@ -23,47 +23,47 @@ class QueryCommandHandlers:
     async def handle_account_info(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
         """显示账户信息（合并持仓、余额、订单查询）"""
         user_id = self.trade_coordinator.get_isolated_user_id(event)
-        
-        # 检查用户是否注册
-        user_data = self.trade_coordinator.storage.get_user(user_id)
+        storage = self.trade_coordinator.storage
+
+        user_data = storage.get_user(user_id)
         if not user_data:
             yield MessageEventResult().message("❌ 您还未注册，请先使用 /股票注册 注册账户")
             return
-        
+
         try:
-            # 更新用户总资产
-            await self.trade_coordinator.update_user_assets_if_needed(user_id)
-            
-            # 获取最新用户数据
-            user_data = self.trade_coordinator.storage.get_user(user_id)
             user = User.from_dict(user_data)
-            
-            # 获取持仓数据
-            positions = self.trade_coordinator.storage.get_positions(user_id)
-            
-            # 更新持仓市值
+            positions = storage.get_positions(user_id)
+
+            # 拉取最新股价并更新持仓市值
+            total_market_value = 0.0
             for pos_data in positions:
-                if pos_data['total_volume'] > 0:
+                if pos_data.get('total_volume', 0) > 0:
                     stock_info = await self.trade_coordinator.stock_service.get_stock_info(pos_data['stock_code'])
                     if stock_info:
                         position = Position.from_dict(pos_data)
                         position.update_market_data(stock_info.current_price)
-                        self.trade_coordinator.storage.save_position(user_id, position.stock_code, position.to_dict())
+                        storage.save_position(user_id, position.stock_code, position.to_dict())
                         pos_data.update(position.to_dict())
-            
-            # 获取冻结资金
-            frozen_funds = self.trade_coordinator.storage.calculate_frozen_funds(user_id)
-            
-            # 格式化输出
+                        total_market_value += position.market_value
+                    else:
+                        total_market_value += pos_data.get('market_value', 0)
+                else:
+                    total_market_value += pos_data.get('market_value', 0)
+
+            # 统一计算总资产（拉取完最新价格后一次性更新）
+            frozen_funds = storage.calculate_frozen_funds(user_id)
+            total_assets = user.balance + total_market_value + frozen_funds
+            user.update_total_assets(total_assets)
+            storage.save_user(user_id, user.to_dict())
+
             info_text = Formatters.format_user_info(user.to_dict(), positions, frozen_funds)
-            
-            # 添加待成交订单信息
-            pending_orders = [order for order in self.trade_coordinator.storage.get_orders(user_id) if order.get('status') == 'pending']
+
+            pending_orders = [o for o in storage.get_orders(user_id) if o.get('status') == 'pending']
             if pending_orders:
                 info_text += "\n\n" + Formatters.format_pending_orders(pending_orders)
-            
+
             yield MessageEventResult().message(info_text)
-            
+
         except Exception as e:
             logger.error(f"查询账户信息失败: {e}")
             yield MessageEventResult().message("❌ 查询失败，请稍后重试")
@@ -122,47 +122,81 @@ class QueryCommandHandlers:
             yield MessageEventResult().message("❌ 查询失败，请稍后重试")
     
     async def handle_ranking(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
-        """显示群内排行榜"""
+        """显示群内排行榜（使用批量拉取确保持仓市值实时）"""
         try:
-            # 获取当前会话的标识，用于过滤同群用户
             platform_name = event.get_platform_name()
             session_id = event.get_session_id()
             session_prefix = f"{platform_name}:"
             session_suffix = f":{session_id}"
-            
-            all_users_data = self.trade_coordinator.storage.get_all_users()
+
+            storage = self.trade_coordinator.storage
+            all_users_data = storage.get_all_users()
+
+            same_session_users = [
+                uid for uid, _ in all_users_data.items()
+                if uid.startswith(session_prefix) and uid.endswith(session_suffix)
+            ]
+
+            if not same_session_users:
+                yield MessageEventResult().message("📊 当前群聊暂无用户排行数据\n请先使用 /股票注册 注册账户")
+                return
+
+            # 1) 收集所有用户持仓涉及的股票代码（去重）
+            all_stock_codes: set[str] = set()
+            user_positions_map: dict[str, list] = {}
+            for user_id in same_session_users:
+                positions = storage.get_positions(user_id)
+                user_positions_map[user_id] = positions
+                for pos in positions:
+                    if pos.get('total_volume', 0) > 0:
+                        all_stock_codes.add(pos['stock_code'])
+
+            # 2) 批量拉取最新股价（复用 30s 缓存，避免 N+1 请求）
+            latest_prices: dict[str, float] = {}
+            if all_stock_codes:
+                stock_info_map = await self.trade_coordinator.stock_service.batch_get_stocks(list(all_stock_codes))
+                for code, info in stock_info_map.items():
+                    if info:
+                        latest_prices[code] = info.current_price
+
+            # 3) 用最新价格更新每个用户的持仓市值并计算总资产
             users_list = []
-            
-            # 筛选同会话用户
-            same_session_users = []
-            for user_id, user_data in all_users_data.items():
-                # 只包含相同会话（群聊）的用户
-                if user_id.startswith(session_prefix) and user_id.endswith(session_suffix):
-                    same_session_users.append(user_id)
-            
-            # 使用并发批量更新用户资产，提高性能
-            if same_session_users:
-                update_tasks = [
-                    self.trade_coordinator.update_user_assets_if_needed(user_id)
-                    for user_id in same_session_users
-                ]
-                await asyncio.gather(*update_tasks, return_exceptions=True)
-                
-                # 获取更新后的用户数据
-                for user_id in same_session_users:
-                    updated_user_data = self.trade_coordinator.storage.get_user(user_id)
-                    if updated_user_data:
-                        users_list.append(updated_user_data)
-            
+            for user_id in same_session_users:
+                user_data = storage.get_user(user_id)
+                if not user_data:
+                    continue
+                user = User.from_dict(user_data)
+
+                total_market_value = 0.0
+                for pos_data in user_positions_map[user_id]:
+                    if pos_data.get('total_volume', 0) > 0:
+                        price = latest_prices.get(pos_data['stock_code'])
+                        if price is not None:
+                            position = Position.from_dict(pos_data)
+                            position.update_market_data(price)
+                            storage.save_position(user_id, position.stock_code, position.to_dict())
+                            total_market_value += position.market_value
+                        else:
+                            total_market_value += pos_data.get('market_value', 0)
+                    else:
+                        total_market_value += pos_data.get('market_value', 0)
+
+                frozen_funds = storage.calculate_frozen_funds(user_id)
+                total_assets = user.balance + total_market_value + frozen_funds
+                user.update_total_assets(total_assets)
+                storage.save_user(user_id, user.to_dict())
+                users_list.append(user.to_dict())
+
             current_user_id = self.trade_coordinator.get_isolated_user_id(event)
-            
+
             if not users_list:
                 yield MessageEventResult().message("📊 当前群聊暂无用户排行数据\n请先使用 /股票注册 注册账户")
                 return
-            
-            ranking_text = Formatters.format_ranking(users_list, current_user_id)
+
+            initial_balance = storage.get_plugin_config_value('initial_balance', 1000000)
+            ranking_text = Formatters.format_ranking(users_list, current_user_id, initial_balance)
             yield MessageEventResult().message(ranking_text)
-            
+
         except Exception as e:
             logger.error(f"查询排行榜失败: {e}")
             yield MessageEventResult().message("❌ 查询失败，请稍后重试")

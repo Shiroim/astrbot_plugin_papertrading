@@ -3,9 +3,16 @@ import asyncio
 from typing import Optional, Dict, Any, List, Callable, AsyncGenerator
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, MessageEventResult
-from astrbot.core.utils.session_waiter import SessionWaiter, session_waiter, SessionController
+from astrbot.core.utils.session_waiter import SessionWaiter, SessionFilter, session_waiter, SessionController
 from astrbot.api.message_components import Plain
 from astrbot.core.message.message_event_result import MessageChain
+
+
+class UserIsolatedSessionFilter(SessionFilter):
+    """按用户隔离的会话过滤器，防止群聊中其他用户的消息触发当前用户的交互等待"""
+
+    def filter(self, event: AstrMessageEvent) -> str:
+        return f"{event.unified_msg_origin}:{event.get_sender_id()}"
 
 
 class UserInteractionService:
@@ -81,8 +88,8 @@ class UserInteractionService:
                     await wait_event.send(MessageChain([Plain('❌ 请输入数字进行选择，或输入"取消"退出')]))
                     return
             
-            # 启动等待
-            await stock_selection_waiter(event)
+            # 启动等待（使用用户隔离过滤器，防止他人消息触发）
+            await stock_selection_waiter(event, session_filter=UserIsolatedSessionFilter())
             if selected_result is None:
                 return None, "用户取消选择"
             return selected_result, None
@@ -144,8 +151,8 @@ class UserInteractionService:
                 await wait_event.send(MessageChain([Plain('❌ 请回复"确认"或"取消"')]))
                 return
             
-            # 启动等待
-            await trade_confirmation_waiter(event)
+            # 启动等待（使用用户隔离过滤器，防止他人消息触发）
+            await trade_confirmation_waiter(event, session_filter=UserIsolatedSessionFilter())
             return confirmation_result, None
             
         except asyncio.TimeoutError:
@@ -200,8 +207,8 @@ class UserInteractionService:
                 controller.stop()
                 return
             
-            # 启动等待
-            await text_input_waiter(event)
+            # 启动等待（使用用户隔离过滤器，防止他人消息触发）
+            await text_input_waiter(event, session_filter=UserIsolatedSessionFilter())
             if input_result is None:
                 return None, "用户取消输入"
             return input_result, None
@@ -274,8 +281,8 @@ class UserInteractionService:
                     await wait_event.send(MessageChain([Plain('❌ 请输入数字进行选择，或输入"取消"退出')]))
                     return
             
-            # 启动等待
-            await choice_selection_waiter(event)
+            # 启动等待（使用用户隔离过滤器，防止他人消息触发）
+            await choice_selection_waiter(event, session_filter=UserIsolatedSessionFilter())
             if choice_result is None:
                 return None, "用户取消选择"
             return choice_result, None
@@ -346,7 +353,7 @@ class UserInteractionService:
                 else:
                     await wait_event.send(MessageChain([Plain('❌ 请回复"确认"或"取消"')]))
 
-            await reset_waiter(event)
+            await reset_waiter(event, session_filter=UserIsolatedSessionFilter())
             if confirmation_result is None:
                 return None, "已取消"
             return confirmation_result, None
