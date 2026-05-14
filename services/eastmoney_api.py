@@ -45,9 +45,15 @@ class EastMoneyAPIService:
         """异步上下文管理器入口"""
         if aiohttp is None:
             raise ImportError("需要安装aiohttp: pip install aiohttp")
-        
-        connector = aiohttp.TCPConnector(verify_ssl=False)
-        timeout = aiohttp.ClientTimeout(total=30)
+
+        connector = aiohttp.TCPConnector(
+            verify_ssl=False,
+            limit=10,
+            enable_cleanup_closed=True,
+            force_close=False,
+            keepalive_timeout=30,
+        )
+        timeout = aiohttp.ClientTimeout(total=30, connect=10, sock_read=15)
         self.session = aiohttp.ClientSession(
             connector=connector,
             timeout=timeout,
@@ -59,7 +65,23 @@ class EastMoneyAPIService:
         """异步上下文管理器出口"""
         if self.session:
             await self.session.close()
-    
+
+    async def _request_with_retry(self, method: str, url: str, max_retries: int = 2, **kwargs) -> Optional[aiohttp.ClientResponse]:
+        """带重试的HTTP请求，处理Server disconnected等瞬态错误"""
+        for attempt in range(max_retries + 1):
+            try:
+                resp = await self.session._request(method, url, **kwargs)
+                return resp
+            except (aiohttp.ServerDisconnectedError, aiohttp.ClientOSError,
+                    aiohttp.ClientConnectionError, asyncio.TimeoutError) as e:
+                if attempt < max_retries:
+                    wait = 0.5 * (attempt + 1)
+                    logger.warning(f"请求 {url} 失败({type(e).__name__})，{wait:.1f}s 后重试({attempt + 1}/{max_retries})")
+                    await asyncio.sleep(wait)
+                else:
+                    raise
+        return None
+
     async def get_code_id(self, code: str) -> Optional[Tuple[str, str]]:
         """
         获取东方财富股票专用的行情ID
@@ -88,11 +110,11 @@ class EastMoneyAPIService:
         }
         
         try:
-            async with self.session.get(url, params=params) as response:
+            async with self._request_with_retry('GET', url, params=params) as response:
                 if response.status == 200:
                     text = await response.text()
                     data = json.loads(text)
-                    
+
                     code_list = data.get('QuotationCodeTable', {}).get('Data', [])
                     if code_list:
                         # 排序：债券排到最后，股票优先
@@ -100,7 +122,7 @@ class EastMoneyAPIService:
                             key=lambda x: x.get('SecurityTypeName') == '债券'
                         )
                         return code_list[0]['QuoteID'], code_list[0]['Name']
-                        
+
         except Exception as e:
             logger.error(f"搜索股票代码失败 {code}: {e}")
         
@@ -139,38 +161,38 @@ class EastMoneyAPIService:
         }
         
         try:
-            async with self.session.get(url, params=params) as response:
+            async with self._request_with_retry('GET', url, params=params) as response:
                 if response.status == 200:
                     text = await response.text()
                     data = json.loads(text)
-                    
+
                     code_list = data.get('QuotationCodeTable', {}).get('Data', [])
                     if not code_list:
                         return []
-                    
+
                     # 过滤和整理结果
                     candidates = []
                     from ..utils.validators import Validators
-                    
+
                     for item in code_list:
                         quote_id = item.get('QuoteID', '')
                         name = item.get('Name', '')
                         security_type = item.get('SecurityTypeName', '')
-                        
+
                         # 提取纯代码（去掉市场前缀）
                         code = quote_id.split('.')[-1] if '.' in quote_id else quote_id
-                        
+
                         # 只保留A股（排除债券、指数等）
-                        if (code.isdigit() and len(code) == 6 and 
+                        if (code.isdigit() and len(code) == 6 and
                             Validators.is_valid_stock_code(code) and
                             security_type != '债券'):
-                            
+
                             candidates.append({
                                 'code': code,
                                 'name': name,
                                 'market': self._get_market_name(code)
                             })
-                    
+
                     # 去重并限制数量
                     seen_codes = set()
                     unique_candidates = []
@@ -180,9 +202,9 @@ class EastMoneyAPIService:
                             unique_candidates.append(candidate)
                             if len(unique_candidates) >= 5:  # 最多返回5个候选
                                 break
-                    
+
                     return unique_candidates
-                    
+
         except Exception as e:
             logger.error(f"模糊搜索股票失败 {keyword}: {e}")
         
@@ -265,35 +287,33 @@ class EastMoneyAPIService:
                 'secid': secid
             }
             
-            async with self.session.get(url, params=params) as response:
+            async with self._request_with_retry('GET', url, params=params) as response:
                 if response.status == 200:
                     data = await response.json()
-                    
+
                     if data.get('data') is None:
                         logger.error(f"获取股票数据失败，可能股票不存在: {stock_code}")
                         return None
-                    
+
                     raw_data = data['data']
-                    
-                    # 解析数据 - 只返回模拟交易必需的字段
-                    # 注意：东方财富API返回的价格数据需要除以100，涨跌幅数据需要除以100
+
                     result = {
                         'code': stock_code,
                         'name': raw_data.get('f58', stock_name),
-                        'current_price': float(raw_data.get('f43', 0) or 0) / 100,  # 价格除以100
-                        'open_price': float(raw_data.get('f46', 0) or 0) / 100,      # 开盘价除以100
-                        'close_price': float(raw_data.get('f60', 0) or 0) / 100,     # 昨收价除以100
-                        'high_price': float(raw_data.get('f44', 0) or 0) / 100,      # 最高价除以100
-                        'low_price': float(raw_data.get('f45', 0) or 0) / 100,       # 最低价除以100
-                        'volume': int(raw_data.get('f47', 0) or 0),                  # 成交量（手）
-                        'turnover': float(raw_data.get('f48', 0) or 0),              # 成交额（元）
-                        'change_amount': float(raw_data.get('f169', 0) or 0) / 100,  # 涨跌额除以100
-                        'change_percent': float(raw_data.get('f170', 0) or 0) / 100, # 涨跌幅除以100
-                        'limit_up': float(raw_data.get('f51', 0) or 0) / 100,        # 涨停价除以100
-                        'limit_down': float(raw_data.get('f52', 0) or 0) / 100,      # 跌停价除以100
+                        'current_price': float(raw_data.get('f43', 0) or 0) / 100,
+                        'open_price': float(raw_data.get('f46', 0) or 0) / 100,
+                        'close_price': float(raw_data.get('f60', 0) or 0) / 100,
+                        'high_price': float(raw_data.get('f44', 0) or 0) / 100,
+                        'low_price': float(raw_data.get('f45', 0) or 0) / 100,
+                        'volume': int(raw_data.get('f47', 0) or 0),
+                        'turnover': float(raw_data.get('f48', 0) or 0),
+                        'change_amount': float(raw_data.get('f169', 0) or 0) / 100,
+                        'change_percent': float(raw_data.get('f170', 0) or 0) / 100,
+                        'limit_up': float(raw_data.get('f51', 0) or 0) / 100,
+                        'limit_down': float(raw_data.get('f52', 0) or 0) / 100,
                         'timestamp': raw_data.get('f86', ''),
                     }
-                    
+
                     return result
                 else:
                     logger.error(f"请求失败，状态码: {response.status}")
@@ -306,29 +326,32 @@ class EastMoneyAPIService:
     async def batch_get_stocks_data(self, stock_codes: list) -> Dict[str, Dict[str, Any]]:
         """
         批量获取股票数据
-        
+
         Args:
             stock_codes: 股票代码列表
-            
+
         Returns:
             {stock_code: stock_data} 字典
         """
         results = {}
-        
-        # 修复并发问题：使用asyncio.gather实现真正的并发
-        tasks = [self.get_stock_realtime_data(code) for code in stock_codes]
-        
-        # 并发执行所有任务
+
+        async def _fetch_one(code: str):
+            data = await self.get_stock_realtime_data(code)
+            # 请求间加间隔，避免并发过高触发限流断连
+            await asyncio.sleep(0.1)
+            return code, data
+
+        tasks = [_fetch_one(code) for code in stock_codes]
         results_list = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # 处理结果
-        for i, result in enumerate(results_list):
-            code = stock_codes[i]
+
+        for result in results_list:
             if isinstance(result, Exception):
-                logger.error(f"获取股票数据失败 {code}: {result}")
+                logger.error(f"批量获取股票数据失败: {result}")
             elif result:
-                results[code] = result
-        
+                code, data = result
+                if data:
+                    results[code] = data
+
         return results
 
 
