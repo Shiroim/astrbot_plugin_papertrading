@@ -63,8 +63,7 @@ class EastMoneyAPIService:
             verify_ssl=False,
             limit=10,
             enable_cleanup_closed=True,
-            force_close=False,
-            keepalive_timeout=30,
+            force_close=True,
         )
         timeout = aiohttp.ClientTimeout(total=30, connect=10, sock_read=15)
         self.session = aiohttp.ClientSession(
